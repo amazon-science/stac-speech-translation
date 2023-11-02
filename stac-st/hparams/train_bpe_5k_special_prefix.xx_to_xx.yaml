@@ -1,0 +1,43 @@
+# ############################################################################
+# Tokenizer: subword BPE tokenizer with BPE 1K
+# Task Tokens: we define several special tokens
+# Training: Fisher-Callhome 160h
+# Authors: ZULUAGA-GOMEZ, JUAN 2023
+# 
+# The task tokens will be used by the decoder for other tasks, including:
+#  - Turn detection
+#  - Cross-talk detection
+#  - Beginning and End of Speech
+#  - Source and Target language
+# ############################################################################
+
+# Set up folders for reading from and writing to
+train_json_file: !PLACEHOLDER # Path where to store the .json and prepared data
+output_folder: !PLACEHOLDER # Path where to store theTokenizer output (model, logs etc)
+device: "cuda:0" # for resample audio
+
+# Tokenizer parameters
+token_type: bpe  # ["unigram", "bpe", "char"]
+token_output: 5000
+# transcription: transcription in source language
+# translation_0: translation in target language
+# transcription_and_translation: joint transcription and translation
+annotation_read: "transcription_and_translation" # field to read
+
+# user defined symbols, separated by comma, you can pass these symbols from CLI
+languages: "[es],[en]"
+user_defined_symbols: !ref "<languages>,[turn],[xt],<languages>"
+
+# Tokenizer object
+tokenizer: !name:speechbrain.tokenizers.SentencePiece.SentencePiece
+   model_dir: !ref <output_folder>
+   vocab_size: !ref <token_output>
+   user_defined_symbols: !ref <user_defined_symbols>
+   annotation_train: !ref <train_json_file>
+   annotation_read: !ref <annotation_read>
+   model_type: !ref <token_type> # ["unigram", "bpe", "char"]
+   annotation_list_to_check: [!ref <train_json_file>]
+   annotation_format: json
+   bos_id: 1
+   eos_id: 2
+   unk_id: 0

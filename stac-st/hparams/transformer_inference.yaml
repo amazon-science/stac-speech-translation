@@ -1,0 +1,174 @@
+# ############################################################################
+# Model: E2E ST with Transformer
+# Encoder: Transformer Encoder
+# Decoder: Transformer Decoder beamsearch
+# Tokens: BPE
+# losses: CTC + NLL (+Label Smoothing)
+# Training: Fisher-Callhome
+# Authors: ZULUAGA-GOMEZ, JUAN
+# ############################################################################
+
+seed: 8886
+__set_seed: !apply:torch.manual_seed [!ref <seed>]
+
+# This specific flag tells the model to use the same JSON object to perform
+# ASR and ST, so we avoid fowarding encoder twice.
+# If set to 1, we do not use this and only use the "task" defined in the object
+number_of_tasks: 2
+
+# flag to print RTTM files for speaker turn detection, it will use turn and xt tokens
+get_rttm_files: True
+
+# path to models
+pretrained_path: !PLACEHOLDER # Path to the model with CKPTs!
+output_folder: !ref <pretrained_path>/inference
+save_folder: !ref <pretrained_path>/save # where the chekpoints are stored
+
+# flags for whether to use XT token and turn token
+use_xt_token: True
+use_turn_token: True
+
+# Tokenizer init (it is actually a BPE model)
+tokenizer_file: !PLACEHOLDER # Path to the file of the Tokenizer model (.model)
+tokenizer: !new:sentencepiece.SentencePieceProcessor
+
+# splits of the json files you want to perform inference
+inference_splits: !PLACEHOLDER
+
+# Trainer settings
+inference_batch_size: 1 # to perform clean evaluation
+num_workers: 16
+
+# Features
+sample_rate: 16000
+n_fft: 400
+n_mels: 80
+
+test_dataloader_opts:
+    batch_size: !ref <inference_batch_size>
+    num_workers: !ref <num_workers>
+
+####################### Model parameters ###########################
+# Multi-task parameters
+ctc_weight: 0.3
+
+# Outputs
+blank_index: 0
+pad_index: 0
+bos_index: 1
+eos_index: 2
+
+# special indexes
+sou: 3
+eou: 4 
+word_sil: 5
+sil_word: 6
+turn: 7
+xt: 8
+
+# Decoding parameters
+label_smoothing: 0.1
+min_decode_ratio: 0.0
+max_decode_ratio: 1.0
+test_beam_size: 10
+ctc_weight_decode: 0
+
+# Transformer
+d_model: 256
+nhead: 4
+num_encoder_layers: 12
+num_decoder_layers: 6
+d_ffn: 1024
+transformer_dropout: 0.1
+activation: !name:torch.nn.GELU
+output_neurons: 5000
+attention_type: "regularMHA" # "RelPosMHAXL" or "regularMHA" (desired)
+encoder_module: transformer
+
+# input features
+compute_features: !new:speechbrain.lobes.features.Fbank
+    sample_rate: !ref <sample_rate>
+    n_fft: !ref <n_fft>
+    n_mels: !ref <n_mels>
+
+############################## models ################################
+CNN: !new:speechbrain.lobes.models.convolution.ConvolutionFrontEnd
+    input_shape: (8, 10, 80)
+    num_blocks: 2
+    num_layers_per_block: 1
+    out_channels: (256, 256)
+    kernel_sizes: (3, 3)
+    strides: (2, 2)
+    residuals: (False, False)
+
+# Transformer: !new:speechbrain.lobes.models.transformer.TransformerST.TransformerST # yamllint disable-line rule:line-length
+Transformer: !new:modules.TransformerMultiTask.TransformerMultiTask
+    input_size: 5120
+    tgt_vocab: !ref <output_neurons>
+    d_model: !ref <d_model>
+    nhead: !ref <nhead>
+    num_encoder_layers: !ref <num_encoder_layers>
+    num_decoder_layers: !ref <num_decoder_layers>
+    d_ffn: !ref <d_ffn>
+    dropout: !ref <transformer_dropout>
+    activation: !ref <activation>
+    encoder_module: !ref <encoder_module>
+    attention_type: !ref <attention_type>
+    normalize_before: True
+    causal: False
+
+# always used, or output for ST
+seq_lin: !new:speechbrain.nnet.linear.Linear
+    input_size: !ref <d_model>
+    n_neurons: !ref <output_neurons>
+
+# only when multi-task setting is used
+ctc_lin: !new:speechbrain.nnet.linear.Linear
+    input_size: !ref <d_model>
+    n_neurons: !ref <output_neurons>
+
+normalize: !new:speechbrain.processing.features.InputNormalization
+    norm_type: global
+    update_until_epoch: 4
+
+modules:
+    CNN: !ref <CNN>
+    Transformer: !ref <Transformer>
+    seq_lin: !ref <seq_lin>
+    ctc_lin: !ref <ctc_lin>
+    normalize: !ref <normalize>
+
+model: !new:torch.nn.ModuleList
+    - [!ref <CNN>, !ref <Transformer>, !ref <seq_lin>, !ref <ctc_lin>]
+
+test_search: !new:modules.mutitask_decoder.S2SMultiTaskTransformerBeamSearch
+    modules: [!ref <Transformer>, !ref <seq_lin>, !ref <ctc_lin>]
+    bos_index: !ref <bos_index>
+    eos_index: !ref <eos_index>
+    blank_index: !ref <blank_index>
+    min_decode_ratio: !ref <min_decode_ratio>
+    max_decode_ratio: !ref <max_decode_ratio>
+    beam_size: !ref <test_beam_size>
+    using_eos_threshold: True
+    length_normalization: True
+    temperature: 1.15
+    lm_weight: 0
+    temperature_lm: 0
+
+log_softmax: !new:torch.nn.LogSoftmax
+    dim: -1
+
+# Checkpoint setting
+checkpointer: !new:speechbrain.utils.checkpoints.Checkpointer
+    checkpoints_dir: !ref <save_folder>
+    recoverables:
+        model: !ref <model>
+        normalizer: !ref <normalize>
+
+# Pretrain the tokenizer
+pretrainer: !new:speechbrain.utils.parameter_transfer.Pretrainer
+    collect_in: !ref <output_folder>/tokenizer
+    loadables:
+        tokenizer: !ref <tokenizer>
+    paths:
+        tokenizer: !ref <tokenizer_file>
